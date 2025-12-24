@@ -115,4 +115,4 @@ def handle_message(message):
 
 # ================= RUN =================
 if __name__ == "__main__":
-    bot.infinity_polling(skip_pending=True)
+    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
