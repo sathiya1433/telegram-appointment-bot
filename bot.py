@@ -1,54 +1,49 @@
-import telebot
-import google.generativeai as genai
 import os
 import json
 import datetime
-import re
+import telebot
+from google import genai
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
-    raise Exception("BOT_TOKEN or GEMINI_API_KEY missing")
+    raise Exception("❌ BOT_TOKEN or GEMINI_API_KEY missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 print("✅ Bot started")
 
-# ================== MEMORY ==================
-user_data = {}
+# ================= MEMORY =================
+user_sessions = {}
 
-# ================== AI PARSER ==================
-def parse_with_ai(user_text, memory):
-    try:
-        model = genai.GenerativeModel("gemini-pro")
-        today = datetime.date.today().isoformat()
+# ================= AI FUNCTION =================
+def ai_extract(user_text, memory):
+    today = datetime.date.today().isoformat()
 
-        prompt = f"""
+    prompt = f"""
 You are an AI appointment booking assistant.
 
 Today date: {today}
 
-Current booking data:
+Current data:
 {json.dumps(memory)}
 
 User message:
 "{user_text}"
 
 TASK:
-Extract booking info.
+- Extract name, date, time if present
+- Convert date to YYYY-MM-DD
+- Convert time to HH:MM (24-hour)
+- Handle words like today, tomorrow, next monday
+- If info is missing, do not invent
+- Return ONLY valid JSON
+- No explanations
 
-RULES:
-- Extract name if present
-- Extract date and convert to YYYY-MM-DD
-  (today, tomorrow, next friday, etc.)
-- Extract time and convert to HH:MM 24-hour format
-- Return ONLY JSON
-- If nothing found, return {{}}
-
-JSON FORMAT:
+JSON format:
 {{
   "name": "",
   "date": "",
@@ -56,70 +51,80 @@ JSON FORMAT:
 }}
 """
 
-        response = model.generate_content(prompt)
+    try:
+        response = client.models.generate_content(
+            model="gemini-1.5-pro",
+            contents=prompt
+        )
         text = response.text.strip()
 
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start == -1 or end == -1:
             return {}
 
-        return json.loads(match.group())
+        data = json.loads(text[start:end])
+
+        # Remove empty values
+        return {k: v for k, v in data.items() if v}
 
     except Exception as e:
-        print("AI ERROR:", e)
+        print("❌ AI ERROR:", e)
         return {}
 
-# ================== START COMMAND ==================
+# ================= START =================
 @bot.message_handler(commands=["start"])
 def start(message):
-    user_data[message.chat.id] = {}
+    user_sessions[message.chat.id] = {}
     bot.reply_to(
         message,
         "👋 *Welcome!*\n\n"
-        "You can say:\n"
-        "`Book tomorrow at 6 PM`\n"
-        "or just send details one by one 😊"
+        "Just tell me your appointment details.\n"
+        "_Example: Book tomorrow at 5 PM_"
     )
 
-# ================== MESSAGE HANDLER ==================
+# ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
 
-    if chat_id not in user_data:
-        user_data[chat_id] = {}
+    print("📩 RECEIVED:", text)
 
-    memory = user_data[chat_id]
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {}
+
+    session = user_sessions[chat_id]
+
     bot.send_chat_action(chat_id, "typing")
 
-    extracted = parse_with_ai(text, memory)
+    extracted = ai_extract(text, session)
 
-    # --- Update memory from AI ---
-    for key in ["name", "date", "time"]:
-        if extracted.get(key):
-            memory[key] = extracted[key]
+    # Update session from AI
+    session.update(extracted)
 
-    # ✅ SMART NAME FALLBACK (FIXES YOUR BUG)
-    if "name" not in memory:
-        # If user sends a short text and no date/time detected
-        if len(text.split()) <= 3 and not re.search(r"\d", text):
-            memory["name"] = text
-
-    # --- FLOW ---
-    if "name" not in memory:
+    # Decide next question
+    if "name" not in session:
         reply = "👤 What is your name?"
-    elif "date" not in memory:
-        reply = f"📅 Hi {memory['name']}, which date would you like?"
-    elif "time" not in memory:
-        reply = f"⏰ What time on {memory['date']}?"
+    elif "date" not in session:
+        reply = f"📅 Hi {session['name']}, which date would you like?"
+    elif "time" not in session:
+        reply = f"⏰ What time on {session['date']}?"
     else:
         reply = (
             "✅ *Appointment Confirmed!*\n\n"
-            f"👤 Name: {memory['name']}\n"
-            f"📅 Date: {memory['date']}\n"
-            f"⏰ Time: {memory['time']}"
+            f"👤 Name: {session['name']}\n"
+            f"📅 Date: {session['date']}\n"
+            f"⏰ Time: {session['time']}"
         )
-        user_data[chat_id] = {}
+        user_sessions[chat_id] = {}  # reset after booking
 
     bot.reply_to(message, reply)
+
+# ================= RUN =================
+if __name__ == "__main__":
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=60,
+        long_polling_timeout=60
+    )
