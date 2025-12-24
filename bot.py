@@ -95,16 +95,22 @@ def handle_message(message):
 
     extracted = parse_with_ai(text, memory)
 
-    # Update memory ONLY from AI
+    # --- Update memory from AI ---
     for key in ["name", "date", "time"]:
         if extracted.get(key):
             memory[key] = extracted[key]
 
-    # Conversation flow
+    # ✅ SMART NAME FALLBACK (FIXES YOUR BUG)
+    if "name" not in memory:
+        # If user sends a short text and no date/time detected
+        if len(text.split()) <= 3 and not re.search(r"\d", text):
+            memory["name"] = text
+
+    # --- FLOW ---
     if "name" not in memory:
         reply = "👤 What is your name?"
     elif "date" not in memory:
-        reply = "📅 Which date would you like?"
+        reply = f"📅 Hi {memory['name']}, which date would you like?"
     elif "time" not in memory:
         reply = f"⏰ What time on {memory['date']}?"
     else:
@@ -117,11 +123,3 @@ def handle_message(message):
         user_data[chat_id] = {}
 
     bot.reply_to(message, reply)
-
-# ================== RUN ==================
-if __name__ == "__main__":
-    bot.infinity_polling(
-        skip_pending=True,
-        timeout=30,
-        long_polling_timeout=30
-    )
