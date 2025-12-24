@@ -90,6 +90,7 @@ def start(message):
 
 # ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
+@bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
@@ -107,36 +108,38 @@ def handle_message(message):
     session = sessions[chat_id]
     bot.send_chat_action(chat_id, "typing")
 
-    # 1️⃣ AI understands message
     extracted = ai_extract(text, session)
 
-    # 2️⃣ Update from AI if present
+    # Update from AI
     for key in ["name", "date", "time"]:
         if extracted.get(key):
             session[key] = extracted[key]
 
-    # 3️⃣ HARD STATE LOGIC (NO AI DECIDES FLOW)
+    # ---------- HARD STATE LOGIC ----------
     if session["expecting"] == "name" and not session["name"]:
         session["name"] = text
 
     elif session["expecting"] == "date" and not session["date"]:
-    if extracted.get("date"):
-        session["date"] = extracted["date"]
-    else:
-        bot.reply_to(
-            message,
-            "📅 Please tell the date clearly.\nExample: `2025-01-25` or `tomorrow`"
-        )
-        return
+        if extracted.get("date"):
+            session["date"] = extracted["date"]
+        else:
+            bot.reply_to(
+                message,
+                "📅 Please tell the date clearly.\nExample: `tomorrow` or `2025-01-25`"
+            )
+            return
 
     elif session["expecting"] == "time" and not session["time"]:
         if extracted.get("time"):
             session["time"] = extracted["time"]
         else:
-            bot.reply_to(chat_id, "⏰ Please tell a valid time.")
+            bot.reply_to(
+                message,
+                "⏰ Please tell the time clearly.\nExample: `4:30 PM` or `16:30`"
+            )
             return
 
-    # 4️⃣ Decide next step
+    # ---------- NEXT STEP ----------
     if not session["name"]:
         session["expecting"] = "name"
         reply = "👤 What is your name?"
@@ -156,7 +159,7 @@ def handle_message(message):
             f"📅 Date: {session['date']}\n"
             f"⏰ Time: {session['time']}"
         )
-        sessions.pop(chat_id, None)  # reset after booking
+        sessions.pop(chat_id, None)
 
     bot.reply_to(message, reply)
 
