@@ -2,29 +2,50 @@ import os
 import json
 import time
 import datetime
+import threading
 import requests
 import telebot
+import smtplib
+from email.message import EmailMessage
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not BOT_TOKEN or not GROQ_API_KEY:
-    raise RuntimeError("Missing BOT_TOKEN or GROQ_API_KEY")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")      # your gmail
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")    # gmail app password
+OWNER_EMAIL = os.getenv("OWNER_EMAIL")          # owner/admin email
+
+if not all([BOT_TOKEN, GROQ_API_KEY, EMAIL_ADDRESS, EMAIL_PASSWORD, OWNER_EMAIL]):
+    raise RuntimeError("Missing environment variables")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-print("✅ Bot started (STABLE VERSION)")
+print("✅ Professional Appointment Bot Started")
 
-# ================= SESSION STORE =================
+# ================= MEMORY =================
 sessions = {}
+appointments = []  # stored in-memory (use DB later)
+
 SESSION_TIMEOUT = 300  # 5 minutes
+
+# ================= EMAIL =================
+def send_email(to_email, subject, body):
+    msg = EmailMessage()
+    msg["From"] = EMAIL_ADDRESS
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        smtp.send_message(msg)
 
 # ================= AI UNDERSTANDING =================
 def ai_extract(text):
     today = datetime.date.today().isoformat()
 
     prompt = f"""
-Extract appointment details from user message.
+Extract appointment details from the message.
 
 Today: {today}
 
@@ -34,14 +55,15 @@ Message:
 Return ONLY JSON:
 {{
   "name": null,
+  "email": null,
   "date": null,
   "time": null
 }}
 
 Rules:
-- Date must be YYYY-MM-DD
-- Time must be HH:MM (24-hour)
-- Understand today, tomorrow, next monday, 4pm, 6:30 PM
+- Date → YYYY-MM-DD
+- Time → HH:MM (24h)
+- Understand: today, tomorrow, next monday, 4pm
 """
 
     try:
@@ -63,15 +85,14 @@ Rules:
         )
 
         content = r.json()["choices"][0]["message"]["content"]
-        start = content.find("{")
-        end = content.rfind("}") + 1
+        start, end = content.find("{"), content.rfind("}") + 1
         if start == -1:
             return {}
 
         return json.loads(content[start:end])
 
     except Exception as e:
-        print("AI error:", e)
+        print("AI ERROR:", e)
         return {}
 
 # ================= START =================
@@ -79,11 +100,18 @@ Rules:
 def start(message):
     sessions[message.chat.id] = {
         "name": None,
+        "email": None,
         "date": None,
         "time": None,
         "last_active": time.time()
     }
-    bot.reply_to(message, "👋 Welcome!\nWhat is your name?")
+
+    bot.reply_to(
+        message,
+        "👋 *Welcome!*\n\n"
+        "I’ll help you schedule your appointment.\n"
+        "May I know your *full name*?"
+    )
 
 # ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
@@ -92,8 +120,6 @@ def handle_message(message):
     text = message.text.strip()
     now = time.time()
 
-    print("📩", chat_id, text)
-
     # Expire old session
     if chat_id in sessions and now - sessions[chat_id]["last_active"] > SESSION_TIMEOUT:
         sessions.pop(chat_id)
@@ -101,6 +127,7 @@ def handle_message(message):
     if chat_id not in sessions:
         sessions[chat_id] = {
             "name": None,
+            "email": None,
             "date": None,
             "time": None,
             "last_active": now
@@ -112,39 +139,101 @@ def handle_message(message):
 
     extracted = ai_extract(text)
 
-    # ---- SAFE UPDATES ----
-    if extracted.get("name"):
-        session["name"] = extracted["name"]
-    elif not session["name"]:
-        session["name"] = text  # name fallback
+    # Update safely
+    session["name"] = extracted.get("name") or session["name"] or text
+    session["email"] = extracted.get("email") or session["email"]
+    session["date"] = extracted.get("date") or session["date"]
+    session["time"] = extracted.get("time") or session["time"]
 
-    if extracted.get("date"):
-        session["date"] = extracted["date"]
-    elif session["name"] and not session["date"] and text.lower() != session["name"].lower():
-        session["date"] = text  # date fallback
-
-    if extracted.get("time"):
-        session["time"] = extracted["time"]
-    elif session["date"] and not session["time"] and text.lower() != session["date"].lower():
-        session["time"] = text  # time fallback
-
-    # ---- NEXT STEP ----
+    # Flow
     if not session["name"]:
-        reply = "👤 What is your name?"
+        reply = "👤 Please tell me your full name."
+    elif not session["email"] or "@" not in session["email"]:
+        reply = "📧 Please provide your email address."
     elif not session["date"]:
-        reply = f"📅 Hi {session['name']}, which date would you like?"
+        reply = f"📅 Thank you {session['name']}. Which *date* would you prefer?"
     elif not session["time"]:
-        reply = f"⏰ What time on {session['date']}?"
+        reply = f"⏰ What *time* on {session['date']} works for you?"
     else:
+        # Save appointment
+        appointment = {
+            "name": session["name"],
+            "email": session["email"],
+            "date": session["date"],
+            "time": session["time"]
+        }
+        appointments.append(appointment)
+
+        # Confirmation emails
+        send_email(
+            session["email"],
+            "Appointment Confirmation",
+            f"""Hello {session['name']},
+
+Your appointment is confirmed.
+
+📅 Date: {session['date']}
+⏰ Time: {session['time']}
+
+Thank you for choosing us.
+"""
+        )
+
+        send_email(
+            OWNER_EMAIL,
+            "New Appointment Booked",
+            f"""New appointment booked.
+
+Name: {session['name']}
+Email: {session['email']}
+Date: {session['date']}
+Time: {session['time']}
+"""
+        )
+
         reply = (
             "✅ *Appointment Confirmed!*\n\n"
             f"👤 {session['name']}\n"
             f"📅 {session['date']}\n"
-            f"⏰ {session['time']}"
+            f"⏰ {session['time']}\n\n"
+            "📧 Confirmation email sent.\n"
+            "⏰ You will receive a reminder before the appointment."
         )
+
         sessions.pop(chat_id)
 
     bot.reply_to(message, reply)
+
+# ================= REMINDER SYSTEM =================
+def reminder_worker():
+    while True:
+        now = datetime.datetime.now()
+        for appt in appointments:
+            appt_time = datetime.datetime.strptime(
+                f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M"
+            )
+
+            # 1-hour reminder
+            if 0 < (appt_time - now).total_seconds() < 3600:
+                send_email(
+                    appt["email"],
+                    "Appointment Reminder",
+                    f"""Hello {appt['name']},
+
+This is a reminder for your appointment today.
+
+⏰ Time: {appt['time']}
+"""
+                )
+                send_email(
+                    OWNER_EMAIL,
+                    "Upcoming Appointment Reminder",
+                    f"Reminder: {appt['name']} at {appt['time']}"
+                )
+                appointments.remove(appt)
+        time.sleep(300)
+
+threading.Thread(target=reminder_worker, daemon=True).start()
 
 # ================= RUN =================
 if __name__ == "__main__":
