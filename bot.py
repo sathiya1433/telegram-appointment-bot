@@ -120,11 +120,14 @@ def handle_message(message):
         session["name"] = text
 
     elif session["expecting"] == "date" and not session["date"]:
-        if extracted.get("date"):
-            session["date"] = extracted["date"]
-        else:
-            bot.reply_to(chat_id, "📅 Please tell a valid date.")
-            return
+    if extracted.get("date"):
+        session["date"] = extracted["date"]
+    else:
+        bot.reply_to(
+            message,
+            "📅 Please tell the date clearly.\nExample: `2025-01-25` or `tomorrow`"
+        )
+        return
 
     elif session["expecting"] == "time" and not session["time"]:
         if extracted.get("time"):
