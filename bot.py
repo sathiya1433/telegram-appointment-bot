@@ -2,7 +2,7 @@ import os
 import json
 import datetime
 import telebot
-from google import genai
+import google.generativeai as genai
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -12,7 +12,9 @@ if not BOT_TOKEN or not GEMINI_API_KEY:
     raise Exception("❌ BOT_TOKEN or GEMINI_API_KEY missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 
 print("✅ Bot started")
 
@@ -38,10 +40,10 @@ TASK:
 - Extract name, date, time if present
 - Convert date to YYYY-MM-DD
 - Convert time to HH:MM (24-hour)
-- Handle words like today, tomorrow, next monday
-- If info is missing, do not invent
+- Handle today, tomorrow, next monday, etc.
+- If info missing, do not invent
 - Return ONLY valid JSON
-- No explanations
+- No explanation
 
 JSON format:
 {{
@@ -52,10 +54,8 @@ JSON format:
 """
 
     try:
-        response = client.models.generate_content(
-            model="gemini-1.5-pro",
-            contents=prompt
-        )
+        model = genai.GenerativeModel("gemini-pro")
+        response = model.generate_content(prompt)
         text = response.text.strip()
 
         start = text.find("{")
@@ -65,7 +65,7 @@ JSON format:
 
         data = json.loads(text[start:end])
 
-        # Remove empty values
+        # Remove empty fields
         return {k: v for k, v in data.items() if v}
 
     except Exception as e:
@@ -95,15 +95,11 @@ def handle_message(message):
         user_sessions[chat_id] = {}
 
     session = user_sessions[chat_id]
-
     bot.send_chat_action(chat_id, "typing")
 
     extracted = ai_extract(text, session)
-
-    # Update session from AI
     session.update(extracted)
 
-    # Decide next question
     if "name" not in session:
         reply = "👤 What is your name?"
     elif "date" not in session:
@@ -117,7 +113,7 @@ def handle_message(message):
             f"📅 Date: {session['date']}\n"
             f"⏰ Time: {session['time']}"
         )
-        user_sessions[chat_id] = {}  # reset after booking
+        user_sessions[chat_id] = {}
 
     bot.reply_to(message, reply)
 
