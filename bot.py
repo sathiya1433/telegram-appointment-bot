@@ -9,78 +9,83 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
-    raise Exception("❌ BOT_TOKEN or GEMINI_API_KEY missing")
+    raise RuntimeError("BOT_TOKEN or GEMINI_API_KEY missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-
-# Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
 print("✅ Bot started")
 
 # ================= MEMORY =================
-user_sessions = {}
+# Per-user session (state machine)
+sessions = {}
 
-# ================= AI FUNCTION =================
-def ai_extract(user_text, memory):
+# ================= AI EXTRACTION =================
+def ai_extract(text, session):
+    """
+    AI is ONLY used to understand free text.
+    Business logic decides flow.
+    """
     today = datetime.date.today().isoformat()
 
     prompt = f"""
-You are an AI appointment booking assistant.
+You are an appointment information extractor.
 
-Today date: {today}
+Today: {today}
 
-Current data:
-{json.dumps(memory)}
+Current known data:
+{json.dumps(session)}
 
 User message:
-"{user_text}"
+"{text}"
 
 TASK:
-- Extract name, date, time if present
-- Convert date to YYYY-MM-DD
-- Convert time to HH:MM (24-hour)
-- Handle today, tomorrow, next monday, etc.
-- If info missing, do not invent
-- Return ONLY valid JSON
-- No explanation
+- Extract name, date, time IF PRESENT
+- Date format: YYYY-MM-DD
+- Time format: HH:MM (24-hour)
+- Handle: today, tomorrow, next monday
+- If not found, return null
+- Return ONLY JSON
 
-JSON format:
+JSON:
 {{
-  "name": "",
-  "date": "",
-  "time": ""
+  "name": null,
+  "date": null,
+  "time": null
 }}
 """
 
     try:
         model = genai.GenerativeModel("gemini-pro")
         response = model.generate_content(prompt)
-        text = response.text.strip()
+        raw = response.text.strip()
 
-        start = text.find("{")
-        end = text.rfind("}") + 1
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
         if start == -1 or end == -1:
             return {}
 
-        data = json.loads(text[start:end])
-
-        # Remove empty fields
+        data = json.loads(raw[start:end])
         return {k: v for k, v in data.items() if v}
 
     except Exception as e:
-        print("❌ AI ERROR:", e)
+        print("AI ERROR:", e)
         return {}
 
 # ================= START =================
 @bot.message_handler(commands=["start"])
 def start(message):
-    user_sessions[message.chat.id] = {}
+    sessions[message.chat.id] = {
+        "name": None,
+        "date": None,
+        "time": None,
+        "expecting": "name"
+    }
     bot.reply_to(
         message,
         "👋 *Welcome!*\n\n"
-        "Just tell me your appointment details.\n"
-        "_Example: Book tomorrow at 5 PM_"
+        "I will help you book an appointment.\n"
+        "Let’s start — what is your name?"
     )
 
 # ================= MESSAGE HANDLER =================
@@ -89,23 +94,58 @@ def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
 
-    print("📩 RECEIVED:", text)
+    print("📩", chat_id, text)
 
-    if chat_id not in user_sessions:
-        user_sessions[chat_id] = {}
+    if chat_id not in sessions:
+        sessions[chat_id] = {
+            "name": None,
+            "date": None,
+            "time": None,
+            "expecting": "name"
+        }
 
-    session = user_sessions[chat_id]
+    session = sessions[chat_id]
     bot.send_chat_action(chat_id, "typing")
 
+    # 1️⃣ AI understands message
     extracted = ai_extract(text, session)
-    session.update(extracted)
 
-    if "name" not in session:
+    # 2️⃣ Update from AI if present
+    for key in ["name", "date", "time"]:
+        if extracted.get(key):
+            session[key] = extracted[key]
+
+    # 3️⃣ HARD STATE LOGIC (NO AI DECIDES FLOW)
+    if session["expecting"] == "name" and not session["name"]:
+        session["name"] = text
+
+    elif session["expecting"] == "date" and not session["date"]:
+        if extracted.get("date"):
+            session["date"] = extracted["date"]
+        else:
+            bot.reply_to(chat_id, "📅 Please tell a valid date.")
+            return
+
+    elif session["expecting"] == "time" and not session["time"]:
+        if extracted.get("time"):
+            session["time"] = extracted["time"]
+        else:
+            bot.reply_to(chat_id, "⏰ Please tell a valid time.")
+            return
+
+    # 4️⃣ Decide next step
+    if not session["name"]:
+        session["expecting"] = "name"
         reply = "👤 What is your name?"
-    elif "date" not in session:
-        reply = f"📅 Hi {session['name']}, which date would you like?"
-    elif "time" not in session:
-        reply = f"⏰ What time on {session['date']}?"
+
+    elif not session["date"]:
+        session["expecting"] = "date"
+        reply = f"📅 Hi *{session['name']}*, which date would you like?"
+
+    elif not session["time"]:
+        session["expecting"] = "time"
+        reply = f"⏰ What time on *{session['date']}*?"
+
     else:
         reply = (
             "✅ *Appointment Confirmed!*\n\n"
@@ -113,7 +153,7 @@ def handle_message(message):
             f"📅 Date: {session['date']}\n"
             f"⏰ Time: {session['time']}"
         )
-        user_sessions[chat_id] = {}
+        sessions.pop(chat_id, None)  # reset after booking
 
     bot.reply_to(message, reply)
 
