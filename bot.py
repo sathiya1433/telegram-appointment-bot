@@ -6,7 +6,7 @@ import requests
 
 # ---------------- ENV VARIABLES ----------------
 TOKEN = os.getenv("BOT_TOKEN")
-EMAIL = os.getenv("EMAIL")              # Your admin Gmail
+EMAIL = os.getenv("EMAIL")              # Admin Gmail
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 HF_API_KEY = os.getenv("HF_API_KEY")
 
@@ -14,36 +14,34 @@ bot = telebot.TeleBot(TOKEN)
 appointments = {}
 
 # ---------------- FREE AI (HUGGING FACE) ----------------
-def ai_reply(user_text):
+def ai_reply(question):
     try:
         headers = {
             "Authorization": f"Bearer {HF_API_KEY}"
         }
 
         payload = {
-            "inputs": f"Reply politely and professionally: {user_text}",
+            "inputs": question,
             "parameters": {
                 "max_new_tokens": 120,
                 "temperature": 0.7
             }
         }
 
-        response = requests.post(
+        r = requests.post(
             "https://api-inference.huggingface.co/models/google/flan-t5-base",
             headers=headers,
             json=payload,
             timeout=20
         )
 
-        result = response.json()
-
+        result = r.json()
         if isinstance(result, list):
             return result[0]["generated_text"]
-        else:
-            return "🤖 Please rephrase your question."
+        return "🤖 I couldn't generate an answer. Please try again."
 
     except Exception:
-        return "⚠️ AI is busy. Please try again shortly."
+        return "⚠️ AI is busy. Please try again later."
 
 # ---------------- START ----------------
 @bot.message_handler(commands=['start'])
@@ -51,12 +49,12 @@ def start(m):
     bot.reply_to(
         m,
         "🤖 Welcome!\n\n"
-        "📅 Type /book to book an appointment\n"
-        "❌ Type /cancel to cancel booking\n"
-        "💬 Or chat with me freely"
+        "📅 /book – Book appointment\n"
+        "🧠 /ask – Ask AI a question\n"
+        "❌ /cancel – Cancel booking"
     )
 
-# ---------------- BOOKING ----------------
+# ---------------- BOOK APPOINTMENT ----------------
 @bot.message_handler(commands=['book'])
 def book(m):
     appointments[m.chat.id] = {}
@@ -67,9 +65,9 @@ def book(m):
 def cancel(m):
     if m.chat.id in appointments:
         del appointments[m.chat.id]
-        bot.reply_to(m, "❌ Booking cancelled. You can chat freely now.")
+        bot.reply_to(m, "❌ Booking cancelled.")
     else:
-        bot.reply_to(m, "No active booking found.")
+        bot.reply_to(m, "No active booking.")
 
 def get_name(m):
     appointments[m.chat.id]['name'] = m.text
@@ -95,11 +93,11 @@ def get_time(m):
 
     bot.reply_to(
         m,
-        "✅ **Appointment Confirmed!**\n\n"
-        f"👤 Name: {data['name']}\n"
-        f"📅 Date: {data['date']}\n"
-        f"⏰ Time: {data['time']}\n\n"
-        "📧 Confirmation email sent to you."
+        "✅ Appointment Confirmed!\n\n"
+        f"👤 {data['name']}\n"
+        f"📅 {data['date']}\n"
+        f"⏰ {data['time']}\n\n"
+        "📧 Confirmation email sent."
     )
 
     del appointments[m.chat.id]
@@ -116,10 +114,9 @@ Time: {data['time']}
 """
 
     msg = MIMEText(body)
-    msg['Subject'] = "📅 New Appointment Booked"
+    msg['Subject'] = "📅 New Appointment"
     msg['From'] = EMAIL
     msg['To'] = EMAIL
-
     send_email(msg)
 
 def send_user_email(data):
@@ -132,19 +129,15 @@ Your appointment has been successfully booked.
 ⏰ Time: {data['time']}
 
 Please be available at the scheduled time.
-If you have any questions, feel free to reply to this email.
 
-Thank you for choosing our service.
-
-Best regards,
-Appointment Support Team
+Thank you,
+Appointment Team
 """
 
     msg = MIMEText(body)
     msg['Subject'] = "✅ Appointment Confirmation"
     msg['From'] = EMAIL
     msg['To'] = data['user_email']
-
     send_email(msg)
 
 def send_email(msg):
@@ -153,20 +146,42 @@ def send_email(msg):
     server.send_message(msg)
     server.quit()
 
-# ---------------- AI CHAT ----------------
-@bot.message_handler(func=lambda m: True)
-def chat(m):
+# ---------------- AI COMMAND (ONLY HERE AI IS USED) ----------------
+@bot.message_handler(commands=['ask'])
+def ask_ai(m):
     if m.chat.id in appointments:
-        bot.reply_to(
-            m,
-            "📅 Please complete booking first.\n"
-            "Or type /cancel to stop booking."
-        )
+        bot.reply_to(m, "Please finish booking or /cancel first.")
+        return
+
+    question = m.text.replace("/ask", "").strip()
+    if not question:
+        bot.reply_to(m, "Usage:\n/ask Your question")
         return
 
     bot.send_chat_action(m.chat.id, 'typing')
-    reply = ai_reply(m.text)
-    bot.reply_to(m, reply)
+    answer = ai_reply(question)
+    bot.reply_to(m, answer)
+
+# ---------------- SIMPLE CHAT (NO AI) ----------------
+@bot.message_handler(func=lambda m: True)
+def simple_chat(m):
+    if m.chat.id in appointments:
+        bot.reply_to(m, "📅 Please complete booking or /cancel.")
+        return
+
+    text = m.text.lower()
+
+    if text in ["hi", "hello", "hey"]:
+        bot.reply_to(m, "Hello 👋 How can I help you?")
+    elif "appointment" in text:
+        bot.reply_to(m, "📅 Use /book to book an appointment.")
+    else:
+        bot.reply_to(
+            m,
+            "🤖 I can help you!\n\n"
+            "👉 /book – Book appointment\n"
+            "👉 /ask – Ask AI a question"
+        )
 
 # ---------------- RUN ----------------
 bot.infinity_polling()
