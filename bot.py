@@ -5,71 +5,93 @@ import json
 import datetime
 
 # --- CONFIGURATION ---
-# Get variables from Railway Environment
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 
-# Initialize Bot and AI
 bot = telebot.TeleBot(BOT_TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 
+# --- MEMORY (The Fix) ---
+# This dictionary will store data: {chat_id: {'name': 'John', 'date': '...', 'time': '...'}}
+user_data = {}
+
 print("✅ Bot is starting...")
 
-# --- AI HELPER FUNCTION ---
+# --- AI HELPER ---
 def parse_with_ai(text):
-    """Uses Gemini to extract booking details from natural text"""
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         current_date = datetime.datetime.now().strftime("%Y-%m-%d")
         
+        # Improved prompt to handle single words like "Sathiya"
         prompt = f"""
-        Today is: {current_date}
-        User said: "{text}"
+        Current Date: {current_date}
+        User Input: "{text}"
         
-        Extract these details into JSON:
-        - name (string or null)
-        - date (YYYY-MM-DD or null)
-        - time (HH:MM or null)
+        You are a booking assistant. Extract any of these details if present:
+        - name (Look for proper nouns or "I am X")
+        - date (YYYY-MM-DD)
+        - time (HH:MM)
         
-        Return ONLY valid JSON.
+        Return JSON with null for missing fields. 
+        Example: {{"name": "Sathiya", "date": null, "time": null}}
         """
         response = model.generate_content(prompt)
-        clean_json = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(clean_json)
+        clean_text = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(clean_text)
     except Exception as e:
         print(f"AI Error: {e}")
         return {}
 
-# --- BOT COMMANDS ---
+# --- COMMANDS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    # Clear memory on start
+    user_data[message.chat.id] = {}
     bot.reply_to(message, "👋 Hello! I am your AI Appointment Bot.\n\n"
-                          "Tell me when you want to book (e.g., 'Book John for next Friday at 4pm')")
+                          "Tell me when you want to book (e.g., 'Book next Friday at 4pm')")
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    # 1. Send "Typing..." action so user knows bot is thinking
-    bot.send_chat_action(message.chat.id, 'typing')
+    chat_id = message.chat.id
     
-    # 2. Process with AI
-    data = parse_with_ai(message.text)
+    # 1. Initialize memory if new user
+    if chat_id not in user_data:
+        user_data[chat_id] = {}
+        
+    bot.send_chat_action(chat_id, 'typing')
     
-    # 3. Formulate reply based on what is missing
-    if not data.get('name'):
+    # 2. Get new info from AI
+    new_info = parse_with_ai(message.text)
+    
+    # 3. UPDATE MEMORY (Merge new info with old info)
+    # Only overwrite if the AI found something new (not null)
+    if new_info.get('name'): 
+        user_data[chat_id]['name'] = new_info['name']
+    if new_info.get('date'): 
+        user_data[chat_id]['date'] = new_info['date']
+    if new_info.get('time'): 
+        user_data[chat_id]['time'] = new_info['time']
+    
+    # 4. Check what is STILL missing from memory
+    current_data = user_data[chat_id]
+    
+    if not current_data.get('name'):
         reply = "I need your name to confirm the booking."
-    elif not data.get('date'):
-        reply = f"Hi {data['name']}, what date would you like?"
-    elif not data.get('time'):
-        reply = f"Okay {data['name']}, what time on {data['date']}?"
+    elif not current_data.get('date'):
+        reply = f"Hi {current_data['name']}, what date would you like?"
+    elif not current_data.get('time'):
+        reply = f"Okay {current_data['name']}, what time on {current_data['date']}?"
     else:
+        # Success!
         reply = (f"✅ **Booking Confirmed!**\n\n"
-                 f"👤 Name: {data['name']}\n"
-                 f"📅 Date: {data['date']}\n"
-                 f"⏰ Time: {data['time']}")
+                 f"👤 Name: {current_data['name']}\n"
+                 f"📅 Date: {current_data['date']}\n"
+                 f"⏰ Time: {current_data['time']}")
+        # Clear memory after success so they can book again
+        user_data[chat_id] = {}
     
     bot.reply_to(message, reply, parse_mode='Markdown')
 
-# --- RUN BOT ---
-# infinity_polling is best for 24/7 uptime on Railway
 if __name__ == "__main__":
     bot.infinity_polling()
