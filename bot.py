@@ -5,28 +5,30 @@ import json
 import datetime
 import re
 
-# ================= CONFIG =================
+# ================== CONFIG ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not BOT_TOKEN or not GEMINI_KEY:
-    raise Exception("❌ BOT_TOKEN or GEMINI_API_KEY not set")
+if not BOT_TOKEN or not GEMINI_API_KEY:
+    raise Exception("BOT_TOKEN or GEMINI_API_KEY missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-genai.configure(api_key=GEMINI_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-print("✅ Bot started successfully")
+print("✅ Bot started")
 
-# ================= MEMORY =================
+# ================== MEMORY ==================
 user_data = {}
 
-# ================= AI PARSER =================
+# ================== AI PARSER ==================
 def parse_with_ai(user_text, memory):
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
         today = datetime.date.today().isoformat()
 
         prompt = f"""
+You are an AI appointment booking assistant.
+
 Today date: {today}
 
 Current booking data:
@@ -35,19 +37,28 @@ Current booking data:
 User message:
 "{user_text}"
 
-Extract ONLY these fields if present:
-- name
-- date (YYYY-MM-DD)
-- time (HH:MM 24h)
+TASK:
+Extract booking info.
 
-Return STRICT JSON only.
-If nothing found, return empty JSON {{}}.
+RULES:
+- Extract name if present
+- Extract date and convert to YYYY-MM-DD
+  (today, tomorrow, next friday, etc.)
+- Extract time and convert to HH:MM 24-hour format
+- Return ONLY JSON
+- If nothing found, return {{}}
+
+JSON FORMAT:
+{{
+  "name": "",
+  "date": "",
+  "time": ""
+}}
 """
 
         response = model.generate_content(prompt)
         text = response.text.strip()
 
-        # Extract JSON safely
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
             return {}
@@ -55,22 +66,22 @@ If nothing found, return empty JSON {{}}.
         return json.loads(match.group())
 
     except Exception as e:
-        print("AI error:", e)
+        print("AI ERROR:", e)
         return {}
 
-# ================= COMMANDS =================
+# ================== START COMMAND ==================
 @bot.message_handler(commands=["start"])
 def start(message):
     user_data[message.chat.id] = {}
     bot.reply_to(
         message,
         "👋 *Welcome!*\n\n"
-        "You can say something like:\n"
-        "`Book an appointment next Friday at 4 PM`\n\n"
-        "Let’s start 😊"
+        "You can say:\n"
+        "`Book tomorrow at 6 PM`\n"
+        "or just send details one by one 😊"
     )
 
-# ================= MESSAGE HANDLER =================
+# ================== MESSAGE HANDLER ==================
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id = message.chat.id
@@ -79,40 +90,38 @@ def handle_message(message):
     if chat_id not in user_data:
         user_data[chat_id] = {}
 
+    memory = user_data[chat_id]
     bot.send_chat_action(chat_id, "typing")
 
-    memory = user_data[chat_id]
-
-    # ---- AI Extraction ----
     extracted = parse_with_ai(text, memory)
 
-    # ---- Update Memory ----
+    # Update memory ONLY from AI
     for key in ["name", "date", "time"]:
         if extracted.get(key):
             memory[key] = extracted[key]
 
-    # ---- Manual fallback for NAME ----
-    if "name" not in memory and len(text.split()) <= 3:
-        memory["name"] = text
-
-    # ---- Conversation Flow ----
+    # Conversation flow
     if "name" not in memory:
         reply = "👤 What is your name?"
     elif "date" not in memory:
-        reply = f"📅 Hi *{memory['name']}*, which date do you want?"
+        reply = "📅 Which date would you like?"
     elif "time" not in memory:
-        reply = f"⏰ What time on *{memory['date']}*?"
+        reply = f"⏰ What time on {memory['date']}?"
     else:
         reply = (
-            "✅ *Booking Confirmed!*\n\n"
+            "✅ *Appointment Confirmed!*\n\n"
             f"👤 Name: {memory['name']}\n"
             f"📅 Date: {memory['date']}\n"
             f"⏰ Time: {memory['time']}"
         )
-        user_data[chat_id] = {}  # Reset after booking
+        user_data[chat_id] = {}
 
     bot.reply_to(message, reply)
 
-# ================= RUN =================
+# ================== RUN ==================
 if __name__ == "__main__":
-    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=30
+    )
