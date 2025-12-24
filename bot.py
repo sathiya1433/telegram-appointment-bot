@@ -1,9 +1,9 @@
 import os
 import json
 import time
-import telebot
-import requests
 import datetime
+import requests
+import telebot
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -13,91 +13,77 @@ if not BOT_TOKEN or not GROQ_API_KEY:
     raise RuntimeError("Missing BOT_TOKEN or GROQ_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-print("✅ Bot started (AI FULL CONTROL MODE)")
+print("✅ Bot started (STABLE VERSION)")
 
-# ================= MEMORY =================
+# ================= SESSION STORE =================
 sessions = {}
 SESSION_TIMEOUT = 300  # 5 minutes
 
-# ================= AI AGENT =================
-def ai_agent(user_text, memory):
+# ================= AI UNDERSTANDING =================
+def ai_extract(text):
     today = datetime.date.today().isoformat()
 
-    system_prompt = f"""
-You are an AI appointment booking agent.
+    prompt = f"""
+Extract appointment details from user message.
 
-Today is {today}.
+Today: {today}
 
-You control the entire booking conversation.
+Message:
+"{text}"
 
-RULES:
-- You MUST decide what to ask next
-- You MUST NOT repeat questions unnecessarily
-- You MUST NOT confirm until name, date, time are known
-- Date format: YYYY-MM-DD
-- Time format: HH:MM (24-hour)
-- Understand: today, tomorrow, next monday, 4pm, 6:30 PM
-
-OUTPUT FORMAT (STRICT JSON ONLY):
+Return ONLY JSON:
 {{
-  "memory": {{
-    "name": string|null,
-    "date": string|null,
-    "time": string|null
-  }},
-  "reply": "message to send user",
-  "done": true|false
+  "name": null,
+  "date": null,
+  "time": null
 }}
 
-NO extra text.
+Rules:
+- Date must be YYYY-MM-DD
+- Time must be HH:MM (24-hour)
+- Understand today, tomorrow, next monday, 4pm, 6:30 PM
 """
 
-    payload = {
-        "model": "llama3-70b-8192",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "assistant", "content": f"Current memory: {json.dumps(memory)}"},
-            {"role": "user", "content": user_text}
-        ],
-        "temperature": 0
-    }
-
     try:
-        response = requests.post(
+        r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
             },
-            json=payload,
-            timeout=20
+            json={
+                "model": "llama3-70b-8192",
+                "messages": [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0
+            },
+            timeout=15
         )
 
-        content = response.json()["choices"][0]["message"]["content"]
+        content = r.json()["choices"][0]["message"]["content"]
         start = content.find("{")
         end = content.rfind("}") + 1
-
         if start == -1:
-            raise ValueError("No JSON from AI")
+            return {}
 
         return json.loads(content[start:end])
 
     except Exception as e:
-        print("❌ AI AGENT ERROR:", e)
-        return {
-            "memory": memory,
-            "reply": "Sorry, I didn’t understand that. Could you repeat?",
-            "done": False
-        }
+        print("AI error:", e)
+        return {}
 
 # ================= START =================
 @bot.message_handler(commands=["start"])
 def start(message):
     sessions[message.chat.id] = {
-        "memory": {"name": None, "date": None, "time": None},
+        "name": None,
+        "date": None,
+        "time": None,
         "last_active": time.time()
     }
-    bot.reply_to(message, "👋 Welcome! Let’s book your appointment.\nWhat is your name?")
+    bot.reply_to(message, "👋 Welcome!\nWhat is your name?")
 
 # ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
@@ -108,13 +94,15 @@ def handle_message(message):
 
     print("📩", chat_id, text)
 
-    # Session expiry
+    # Expire old session
     if chat_id in sessions and now - sessions[chat_id]["last_active"] > SESSION_TIMEOUT:
-        sessions.pop(chat_id, None)
+        sessions.pop(chat_id)
 
     if chat_id not in sessions:
         sessions[chat_id] = {
-            "memory": {"name": None, "date": None, "time": None},
+            "name": None,
+            "date": None,
+            "time": None,
             "last_active": now
         }
 
@@ -122,17 +110,41 @@ def handle_message(message):
     session["last_active"] = now
     bot.send_chat_action(chat_id, "typing")
 
-    ai_response = ai_agent(text, session["memory"])
+    extracted = ai_extract(text)
 
-    # Update memory from AI
-    session["memory"] = ai_response.get("memory", session["memory"])
+    # ---- SAFE UPDATES ----
+    if extracted.get("name"):
+        session["name"] = extracted["name"]
+    elif not session["name"]:
+        session["name"] = text  # name fallback
 
-    # Send reply
-    bot.reply_to(message, ai_response["reply"])
+    if extracted.get("date"):
+        session["date"] = extracted["date"]
+    elif session["name"] and not session["date"] and text.lower() != session["name"].lower():
+        session["date"] = text  # date fallback
 
-    # Clear session if done
-    if ai_response.get("done") is True:
-        sessions.pop(chat_id, None)
+    if extracted.get("time"):
+        session["time"] = extracted["time"]
+    elif session["date"] and not session["time"] and text.lower() != session["date"].lower():
+        session["time"] = text  # time fallback
+
+    # ---- NEXT STEP ----
+    if not session["name"]:
+        reply = "👤 What is your name?"
+    elif not session["date"]:
+        reply = f"📅 Hi {session['name']}, which date would you like?"
+    elif not session["time"]:
+        reply = f"⏰ What time on {session['date']}?"
+    else:
+        reply = (
+            "✅ *Appointment Confirmed!*\n\n"
+            f"👤 {session['name']}\n"
+            f"📅 {session['date']}\n"
+            f"⏰ {session['time']}"
+        )
+        sessions.pop(chat_id)
+
+    bot.reply_to(message, reply)
 
 # ================= RUN =================
 if __name__ == "__main__":
