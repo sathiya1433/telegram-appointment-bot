@@ -23,7 +23,7 @@ user_data = {}
 # ================== AI PARSER ==================
 def parse_with_ai(user_text, memory):
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-pro")
         today = datetime.date.today().isoformat()
 
         prompt = f"""
