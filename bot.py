@@ -67,9 +67,11 @@ def get_time(m):
 
 @bot.message_handler(func=lambda m: True)
 def chat(m):
+    if m.text.startswith("/"):
+        return
+    bot.send_chat_action(m.chat.id, 'typing')
     reply = ai_reply(m.text)
     bot.reply_to(m, reply)
-
 def send_email(data):
     body = f"""
 New Appointment
