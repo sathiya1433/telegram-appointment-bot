@@ -2,7 +2,6 @@ import os
 import json
 import time
 import datetime
-import threading
 import requests
 import telebot
 import smtplib
@@ -12,9 +11,9 @@ from email.message import EmailMessage
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")      # your gmail
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")    # gmail app password
-OWNER_EMAIL = os.getenv("OWNER_EMAIL")          # owner/admin email
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+OWNER_EMAIL = os.getenv("OWNER_EMAIL")
 
 if not all([BOT_TOKEN, GROQ_API_KEY, EMAIL_ADDRESS, EMAIL_PASSWORD, OWNER_EMAIL]):
     raise RuntimeError("Missing environment variables")
@@ -24,8 +23,6 @@ print("✅ Professional Appointment Bot Started")
 
 # ================= MEMORY =================
 sessions = {}
-appointments = []  # stored in-memory (use DB later)
-
 SESSION_TIMEOUT = 300  # 5 minutes
 
 # ================= EMAIL =================
@@ -40,12 +37,12 @@ def send_email(to_email, subject, body):
         smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         smtp.send_message(msg)
 
-# ================= AI UNDERSTANDING =================
+# ================= AI EXTRACTION =================
 def ai_extract(text):
     today = datetime.date.today().isoformat()
 
     prompt = f"""
-Extract appointment details from the message.
+Extract appointment details.
 
 Today: {today}
 
@@ -61,9 +58,9 @@ Return ONLY JSON:
 }}
 
 Rules:
-- Date → YYYY-MM-DD
-- Time → HH:MM (24h)
-- Understand: today, tomorrow, next monday, 4pm
+- Date: YYYY-MM-DD
+- Time: HH:MM (24-hour)
+- Understand today, tomorrow, next monday, 4pm
 """
 
     try:
@@ -85,7 +82,8 @@ Rules:
         )
 
         content = r.json()["choices"][0]["message"]["content"]
-        start, end = content.find("{"), content.rfind("}") + 1
+        start = content.find("{")
+        end = content.rfind("}") + 1
         if start == -1:
             return {}
 
@@ -109,8 +107,8 @@ def start(message):
     bot.reply_to(
         message,
         "👋 *Welcome!*\n\n"
-        "I’ll help you schedule your appointment.\n"
-        "May I know your *full name*?"
+        "I will help you book an appointment.\n"
+        "Please tell me your *full name*."
     )
 
 # ================= MESSAGE HANDLER =================
@@ -139,47 +137,41 @@ def handle_message(message):
 
     extracted = ai_extract(text)
 
-    # Update safely
     # -------- SAFE FIELD UPDATES --------
 
-# Name
-if extracted.get("name") and not session["name"]:
-    session["name"] = extracted["name"]
+    # Name
+    if extracted.get("name") and not session["name"]:
+        session["name"] = extracted["name"]
 
-# Email
-if extracted.get("email") and not session["email"]:
-    session["email"] = extracted["email"]
-elif "@" in text and not session["email"]:
-    session["email"] = text
+    # Email
+    if extracted.get("email") and not session["email"]:
+        session["email"] = extracted["email"]
+    elif "@" in text and not session["email"]:
+        session["email"] = text
 
-# Date
-if extracted.get("date") and not session["date"]:
-    session["date"] = extracted["date"]
+    # Date
+    if extracted.get("date") and not session["date"]:
+        session["date"] = extracted["date"]
 
-# Time
-if extracted.get("time") and not session["time"]:
-    session["time"] = extracted["time"]
+    # Time
+    if extracted.get("time") and not session["time"]:
+        session["time"] = extracted["time"]
 
-    # Flow
+    # -------- FLOW CONTROL --------
     if not session["name"]:
         reply = "👤 Please tell me your full name."
-    elif not session["email"] or "@" not in session["email"]:
+
+    elif not session["email"]:
         reply = "📧 Please provide your email address."
+
     elif not session["date"]:
-        reply = f"📅 Thank you {session['name']}. Which *date* would you prefer?"
+        reply = f"📅 Thank you {session['name']}, which *date* would you like?"
+
     elif not session["time"]:
         reply = f"⏰ What *time* on {session['date']} works for you?"
-    else:
-        # Save appointment
-        appointment = {
-            "name": session["name"],
-            "email": session["email"],
-            "date": session["date"],
-            "time": session["time"]
-        }
-        appointments.append(appointment)
 
-        # Confirmation emails
+    else:
+        # Send emails
         send_email(
             session["email"],
             "Appointment Confirmation",
@@ -190,7 +182,7 @@ Your appointment is confirmed.
 📅 Date: {session['date']}
 ⏰ Time: {session['time']}
 
-Thank you for choosing us.
+Thank you.
 """
         )
 
@@ -211,44 +203,12 @@ Time: {session['time']}
             f"👤 {session['name']}\n"
             f"📅 {session['date']}\n"
             f"⏰ {session['time']}\n\n"
-            "📧 Confirmation email sent.\n"
-            "⏰ You will receive a reminder before the appointment."
+            "📧 Confirmation email sent to you and the owner."
         )
 
         sessions.pop(chat_id)
 
     bot.reply_to(message, reply)
-
-# ================= REMINDER SYSTEM =================
-def reminder_worker():
-    while True:
-        now = datetime.datetime.now()
-        for appt in appointments:
-            appt_time = datetime.datetime.strptime(
-                f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M"
-            )
-
-            # 1-hour reminder
-            if 0 < (appt_time - now).total_seconds() < 3600:
-                send_email(
-                    appt["email"],
-                    "Appointment Reminder",
-                    f"""Hello {appt['name']},
-
-This is a reminder for your appointment today.
-
-⏰ Time: {appt['time']}
-"""
-                )
-                send_email(
-                    OWNER_EMAIL,
-                    "Upcoming Appointment Reminder",
-                    f"Reminder: {appt['name']} at {appt['time']}"
-                )
-                appointments.remove(appt)
-        time.sleep(300)
-
-threading.Thread(target=reminder_worker, daemon=True).start()
 
 # ================= RUN =================
 if __name__ == "__main__":
