@@ -19,7 +19,7 @@ if not all([BOT_TOKEN, GROQ_API_KEY, EMAIL_ADDRESS, EMAIL_PASSWORD, OWNER_EMAIL]
     raise RuntimeError("Missing environment variables")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-print("✅ Professional Appointment Bot Started")
+print("✅ Appointment Bot Started (FINAL FIX)")
 
 # ================= MEMORY =================
 sessions = {}
@@ -58,9 +58,9 @@ Return ONLY JSON:
 }}
 
 Rules:
-- Date: YYYY-MM-DD
-- Time: HH:MM (24-hour)
-- Understand today, tomorrow, next monday, 4pm
+- Date → YYYY-MM-DD
+- Time → HH:MM (24-hour)
+- Understand: today, tomorrow, next monday, 4pm
 """
 
     try:
@@ -137,23 +137,23 @@ def handle_message(message):
 
     extracted = ai_extract(text)
 
-    # -------- SAFE FIELD UPDATES --------
+    # -------- SAFE FIELD UPDATES (FINAL FIX) --------
 
-    # Name
-    if extracted.get("name") and not session["name"]:
-        session["name"] = extracted["name"]
+    # NAME (critical fix)
+    if not session["name"] and "@" not in text:
+        session["name"] = extracted.get("name") or text
 
-    # Email
+    # EMAIL
     if extracted.get("email") and not session["email"]:
         session["email"] = extracted["email"]
     elif "@" in text and not session["email"]:
         session["email"] = text
 
-    # Date
+    # DATE
     if extracted.get("date") and not session["date"]:
         session["date"] = extracted["date"]
 
-    # Time
+    # TIME
     if extracted.get("time") and not session["time"]:
         session["time"] = extracted["time"]
 
@@ -171,7 +171,7 @@ def handle_message(message):
         reply = f"⏰ What *time* on {session['date']} works for you?"
 
     else:
-        # Send emails
+        # Send confirmation emails
         send_email(
             session["email"],
             "Appointment Confirmation",
