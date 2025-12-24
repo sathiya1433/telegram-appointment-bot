@@ -64,11 +64,19 @@ def get_time(m):
     data = appointments[m.chat.id]
     send_email(data)
     bot.reply_to(m, "✅ Appointment booked. I’ve notified you by email.")
-
+    del appointments[m.chat.id]
 @bot.message_handler(func=lambda m: True)
 def chat(m):
-    if m.text.startswith("/"):
+    # If user is in booking process, don't use AI
+    if m.chat.id in appointments:
+        bot.reply_to(
+            m,
+            "📅 Please finish booking first.\n"
+            "Or type /cancel to stop booking."
+        )
         return
+
+    # Normal AI chat
     bot.send_chat_action(m.chat.id, 'typing')
     reply = ai_reply(m.text)
     bot.reply_to(m, reply)
