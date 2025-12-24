@@ -13,24 +13,31 @@ bot = telebot.TeleBot(TOKEN)
 appointments = {}
 
 def ai_reply(user_text):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "You are a polite, helpful appointment assistant."},
-            {"role": "user", "content": user_text}
-        ]
-    }
-    r = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=headers,
-        json=data,
-        timeout=30
-    )
-    return r.json()["choices"][0]["message"]["content"]
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENAI_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are a helpful, concise assistant."},
+                {"role": "user", "content": user_text}
+            ],
+            "max_tokens": 150
+        }
+
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=15   # ✅ prevents bot from getting stuck
+        )
+
+        return r.json()["choices"][0]["message"]["content"]
+
+    except Exception:
+        return "⏳ I'm thinking… please try again."
 
 @bot.message_handler(commands=['start'])
 def start(m):
