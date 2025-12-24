@@ -3,110 +3,105 @@ import smtplib
 from email.mime.text import MIMEText
 import os
 
-# ---------------- ENV VARIABLES ----------------
-TOKEN = os.getenv("BOT_TOKEN")
+# ================= CONFIG =================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 EMAIL = os.getenv("EMAIL")              # Admin Gmail
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN)
 appointments = {}
 
-# ---------------- START ----------------
+# ================= START =================
 @bot.message_handler(commands=['start'])
-def start(m):
+def start(message):
     bot.reply_to(
-        m,
+        message,
         "👋 Welcome!\n\n"
-        "📅 /book – Book an appointment\n"
-        "❌ /cancel – Cancel booking\n"
-        "ℹ️ I will guide you step by step"
+        "📅 /book - Book an appointment\n"
+        "❌ /cancel - Cancel booking"
     )
 
-# ---------------- BOOK APPOINTMENT ----------------
+# ================= BOOK =================
 @bot.message_handler(commands=['book'])
-def book(m):
-    appointments[m.chat.id] = {}
-    bot.reply_to(m, "👤 Please enter your full name:")
-    bot.register_next_step_handler(m, get_name)
+def book(message):
+    appointments[message.chat.id] = {}
+    bot.reply_to(message, "👤 Enter your full name:")
+    bot.register_next_step_handler(message, get_name)
 
 @bot.message_handler(commands=['cancel'])
-def cancel(m):
-    if m.chat.id in appointments:
-        del appointments[m.chat.id]
-        bot.reply_to(m, "❌ Booking cancelled successfully.")
+def cancel(message):
+    if message.chat.id in appointments:
+        del appointments[message.chat.id]
+        bot.reply_to(message, "❌ Booking cancelled.")
     else:
-        bot.reply_to(m, "No active booking found.")
+        bot.reply_to(message, "No active booking.")
 
-def get_name(m):
-    appointments[m.chat.id]['name'] = m.text
-    bot.reply_to(m, "📧 Please enter your email address:")
-    bot.register_next_step_handler(m, get_email)
+def get_name(message):
+    appointments[message.chat.id]["name"] = message.text
+    bot.reply_to(message, "📧 Enter your email address:")
+    bot.register_next_step_handler(message, get_email)
 
-def get_email(m):
-    appointments[m.chat.id]['user_email'] = m.text
-    bot.reply_to(m, "📅 Appointment date (DD-MM-YYYY):")
-    bot.register_next_step_handler(m, get_date)
+def get_email(message):
+    appointments[message.chat.id]["user_email"] = message.text
+    bot.reply_to(message, "📅 Appointment date (DD-MM-YYYY):")
+    bot.register_next_step_handler(message, get_date)
 
-def get_date(m):
-    appointments[m.chat.id]['date'] = m.text
-    bot.reply_to(m, "⏰ Appointment time (HH:MM):")
-    bot.register_next_step_handler(m, get_time)
+def get_date(message):
+    appointments[message.chat.id]["date"] = message.text
+    bot.reply_to(message, "⏰ Appointment time (HH:MM):")
+    bot.register_next_step_handler(message, get_time)
 
-def get_time(m):
-    appointments[m.chat.id]['time'] = m.text
-    data = appointments[m.chat.id]
+def get_time(message):
+    appointments[message.chat.id]["time"] = message.text
+    data = appointments[message.chat.id]
 
     send_admin_email(data)
     send_user_email(data)
 
     bot.reply_to(
-        m,
-        "✅ **Appointment Confirmed!**\n\n"
+        message,
+        "✅ Appointment Confirmed!\n\n"
         f"👤 Name: {data['name']}\n"
         f"📅 Date: {data['date']}\n"
         f"⏰ Time: {data['time']}\n\n"
-        "📧 Confirmation email has been sent."
+        "📧 Confirmation email sent."
     )
 
-    del appointments[m.chat.id]
+    del appointments[message.chat.id]
 
-# ---------------- EMAIL FUNCTIONS ----------------
+# ================= EMAIL =================
 def send_admin_email(data):
-    body = f"""
-New Appointment Booked
-
-Name: {data['name']}
-Email: {data['user_email']}
-Date: {data['date']}
-Time: {data['time']}
-"""
+    body = (
+        "New Appointment Booked\n\n"
+        f"Name: {data['name']}\n"
+        f"Email: {data['user_email']}\n"
+        f"Date: {data['date']}\n"
+        f"Time: {data['time']}\n"
+    )
 
     msg = MIMEText(body)
-    msg['Subject'] = "📅 New Appointment Booked"
-    msg['From'] = EMAIL
-    msg['To'] = EMAIL
+    msg["Subject"] = "📅 New Appointment"
+    msg["From"] = EMAIL
+    msg["To"] = EMAIL
+
     send_email(msg)
 
 def send_user_email(data):
-    body = f"""
-Dear {data['name']},
-
-Your appointment has been successfully booked.
-
-📅 Date: {data['date']}
-⏰ Time: {data['time']}
-
-Please be available at the scheduled time.
-If you need to reschedule, contact us.
-
-Best regards,
-Appointment Team
-"""
+    body = (
+        f"Dear {data['name']},\n\n"
+        "Your appointment has been successfully booked.\n\n"
+        f"📅 Date: {data['date']}\n"
+        f"⏰ Time: {data['time']}\n\n"
+        "Please be available at the scheduled time.\n\n"
+        "Best regards,\n"
+        "Appointment Team"
+    )
 
     msg = MIMEText(body)
-    msg['Subject'] = "✅ Appointment Confirmation"
-    msg['From'] = EMAIL
-    msg['To'] = data['user_email']
+    msg["Subject"] = "✅ Appointment Confirmation"
+    msg["From"] = EMAIL
+    msg["To"] = data["user_email"]
+
     send_email(msg)
 
 def send_email(msg):
@@ -115,20 +110,17 @@ def send_email(msg):
     server.send_message(msg)
     server.quit()
 
-# ---------------- DEFAULT HANDLER ----------------
+# ================= DEFAULT =================
 @bot.message_handler(func=lambda m: True)
-def default_reply(m):
-    if m.chat.id in appointments:
-        bot.reply_to(
-            m,
-            "📅 Please complete your booking or type /cancel."
-        )
+def default_reply(message):
+    if message.chat.id in appointments:
+        bot.reply_to(message, "📅 Please complete booking or /cancel.")
     else:
         bot.reply_to(
-            m,
-            "👋 Hello!\n\n"
+            message,
+            "👋 Hi!\n\n"
             "📅 Use /book to book an appointment"
         )
 
-# ---------------- RUN ----------------
+# ================= RUN =================
 bot.infinity_polling()
