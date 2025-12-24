@@ -140,10 +140,25 @@ def handle_message(message):
     extracted = ai_extract(text)
 
     # Update safely
-    session["name"] = extracted.get("name") or session["name"] or text
-    session["email"] = extracted.get("email") or session["email"]
-    session["date"] = extracted.get("date") or session["date"]
-    session["time"] = extracted.get("time") or session["time"]
+    # -------- SAFE FIELD UPDATES --------
+
+# Name
+if extracted.get("name") and not session["name"]:
+    session["name"] = extracted["name"]
+
+# Email
+if extracted.get("email") and not session["email"]:
+    session["email"] = extracted["email"]
+elif "@" in text and not session["email"]:
+    session["email"] = text
+
+# Date
+if extracted.get("date") and not session["date"]:
+    session["date"] = extracted["date"]
+
+# Time
+if extracted.get("time") and not session["time"]:
+    session["time"] = extracted["time"]
 
     # Flow
     if not session["name"]:
