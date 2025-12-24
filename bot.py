@@ -13,11 +13,10 @@ if not BOT_TOKEN or not GROQ_API_KEY:
     raise RuntimeError("BOT_TOKEN or GROQ_API_KEY missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-print("✅ Bot started (Groq AI)")
+print("✅ Bot started (FINAL FIXED VERSION)")
 
 # ================= MEMORY =================
 sessions = {}
-
 SESSION_TIMEOUT = 300  # 5 minutes
 
 # ================= GROQ AI =================
@@ -25,7 +24,7 @@ def ai_extract(text, session):
     today = datetime.date.today().isoformat()
 
     prompt = f"""
-You extract appointment details.
+You extract appointment information.
 
 Today: {today}
 
@@ -35,13 +34,12 @@ Known data:
 User message:
 "{text}"
 
-Extract:
+Extract if present:
 - name
 - date (YYYY-MM-DD)
-- time (HH:MM 24-hour)
+- time (HH:MM 24h)
 
-Handle:
-today, tomorrow, next monday, 4pm, 6:30 PM
+Handle: today, tomorrow, next monday, 4pm, 6:30 PM
 
 Return ONLY JSON:
 {{
@@ -61,7 +59,7 @@ Return ONLY JSON:
             json={
                 "model": "llama3-70b-8192",
                 "messages": [
-                    {"role": "system", "content": "You return only JSON."},
+                    {"role": "system", "content": "Return only JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0
@@ -72,7 +70,8 @@ Return ONLY JSON:
         content = response.json()["choices"][0]["message"]["content"]
         start = content.find("{")
         end = content.rfind("}") + 1
-        if start == -1:
+
+        if start == -1 or end == -1:
             return {}
 
         data = json.loads(content[start:end])
@@ -92,7 +91,7 @@ def start(message):
         "expecting": "name",
         "last_active": time.time()
     }
-    bot.reply_to(message, "👋 Welcome!\nWhat is your name?")
+    bot.reply_to(message, "👋 Welcome!\n\nWhat is your name?")
 
 # ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
@@ -120,34 +119,41 @@ def handle_message(message):
     session["last_active"] = now
     bot.send_chat_action(chat_id, "typing")
 
+    # 1️⃣ AI extraction
     extracted = ai_extract(text, session)
 
     for k in ["name", "date", "time"]:
         if extracted.get(k):
             session[k] = extracted[k]
 
-    # ---------- STATE LOGIC ----------
+    # 2️⃣ HARD STATE LOGIC (NO STUCK POSSIBLE)
+
+    # NAME
     if session["expecting"] == "name" and not session["name"]:
         session["name"] = text
 
+    # DATE (🔥 FIX: ALWAYS ACCEPT USER INPUT)
     elif session["expecting"] == "date" and not session["date"]:
-        if not extracted.get("date"):
-            bot.reply_to(message, "📅 Please tell the date clearly.")
-            return
+        if extracted.get("date"):
+            session["date"] = extracted["date"]
+        else:
+            session["date"] = text  # <- CRITICAL FIX
 
+    # TIME (🔥 FIX: ALWAYS ACCEPT USER INPUT)
     elif session["expecting"] == "time" and not session["time"]:
-        if not extracted.get("time"):
-            bot.reply_to(message, "⏰ Please tell the time clearly.")
-            return
+        if extracted.get("time"):
+            session["time"] = extracted["time"]
+        else:
+            session["time"] = text  # <- CRITICAL FIX
 
-    # ---------- NEXT STEP ----------
+    # 3️⃣ NEXT STEP
     if not session["name"]:
         session["expecting"] = "name"
         reply = "👤 What is your name?"
 
     elif not session["date"]:
         session["expecting"] = "date"
-        reply = f"📅 Hi {session['name']}, which date?"
+        reply = f"📅 Hi {session['name']}, which date would you like?"
 
     elif not session["time"]:
         session["expecting"] = "time"
@@ -156,9 +162,9 @@ def handle_message(message):
     else:
         reply = (
             "✅ *Appointment Confirmed!*\n\n"
-            f"👤 {session['name']}\n"
-            f"📅 {session['date']}\n"
-            f"⏰ {session['time']}"
+            f"👤 Name: {session['name']}\n"
+            f"📅 Date: {session['date']}\n"
+            f"⏰ Time: {session['time']}"
         )
         sessions.pop(chat_id, None)
 
