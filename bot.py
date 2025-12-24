@@ -3,102 +3,116 @@ import google.generativeai as genai
 import os
 import json
 import datetime
-import re # Added for robust text cleaning
+import re
 
-# --- CONFIGURATION ---
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
+# ================= CONFIG =================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+if not BOT_TOKEN or not GEMINI_KEY:
+    raise Exception("❌ BOT_TOKEN or GEMINI_API_KEY not set")
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 genai.configure(api_key=GEMINI_KEY)
 
-# --- MEMORY ---
+print("✅ Bot started successfully")
+
+# ================= MEMORY =================
 user_data = {}
 
-print("✅ Bot is starting... (Robust Version)")
-
-# --- AI HELPER (Fixed) ---
-def parse_with_ai(text):
+# ================= AI PARSER =================
+def parse_with_ai(user_text, memory):
     try:
-        # 1. Force JSON mode
-        model = genai.GenerativeModel('gemini-1.5-flash', 
-                                      generation_config={"response_mime_type": "application/json"})
-        
-        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        today = datetime.date.today().isoformat()
+
         prompt = f"""
-        Current Date: {current_date}
-        User Input: "{text}"
-        
-        Extract details. Return ONLY a JSON object.
-        fields: name, date (YYYY-MM-DD), time (HH:MM).
-        Set missing fields to null.
-        """
-        
+Today date: {today}
+
+Current booking data:
+{json.dumps(memory)}
+
+User message:
+"{user_text}"
+
+Extract ONLY these fields if present:
+- name
+- date (YYYY-MM-DD)
+- time (HH:MM 24h)
+
+Return STRICT JSON only.
+If nothing found, return empty JSON {{}}.
+"""
+
         response = model.generate_content(prompt)
-        raw_text = response.text
-        
-        # 2. Safety Filter (Regex) - Finds the JSON object inside any text
-        # This fixes the crash if AI adds "Here is the data..."
-        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        
-        if match:
-            clean_json = match.group()
-            return json.loads(clean_json)
-        else:
-            print(f"⚠️ AI returned invalid format: {raw_text}")
+        text = response.text.strip()
+
+        # Extract JSON safely
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
             return {}
 
+        return json.loads(match.group())
+
     except Exception as e:
-        # 3. Print the EXACT error to Railway logs so you can see it
-        print(f"❌ CRITICAL AI ERROR: {e}")
+        print("AI error:", e)
         return {}
 
-# --- COMMANDS ---
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    user_data[message.chat.id] = {} # Reset memory
-    bot.reply_to(message, "👋 Hello! I am your AI Appointment Bot.\n\n"
-                          "Tell me when you want to book (e.g., 'Book next Friday at 4pm')")
+# ================= COMMANDS =================
+@bot.message_handler(commands=["start"])
+def start(message):
+    user_data[message.chat.id] = {}
+    bot.reply_to(
+        message,
+        "👋 *Welcome!*\n\n"
+        "You can say something like:\n"
+        "`Book an appointment next Friday at 4 PM`\n\n"
+        "Let’s start 😊"
+    )
 
+# ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id = message.chat.id
-    
-    # Initialize memory if empty
+    text = message.text.strip()
+
     if chat_id not in user_data:
         user_data[chat_id] = {}
-        
-    bot.send_chat_action(chat_id, 'typing')
-    
-    # Process with AI
-    new_info = parse_with_ai(message.text)
-    
-    # Debugging: Print to Railway logs what the AI found
-    print(f"User: {message.text} | AI Found: {new_info}")
 
-    # Update Memory
-    if new_info.get('name'): user_data[chat_id]['name'] = new_info['name']
-    if new_info.get('date'): user_data[chat_id]['date'] = new_info['date']
-    if new_info.get('time'): user_data[chat_id]['time'] = new_info['time']
-    
-    # Check what is missing
-    current = user_data[chat_id]
-    
-    if not current.get('name'):
-        reply = "I need your name to confirm the booking."
-    elif not current.get('date'):
-        reply = f"Hi {current['name']}, what date would you like?"
-    elif not current.get('time'):
-        reply = f"Okay {current['name']}, what time on {current['date']}?"
+    bot.send_chat_action(chat_id, "typing")
+
+    memory = user_data[chat_id]
+
+    # ---- AI Extraction ----
+    extracted = parse_with_ai(text, memory)
+
+    # ---- Update Memory ----
+    for key in ["name", "date", "time"]:
+        if extracted.get(key):
+            memory[key] = extracted[key]
+
+    # ---- Manual fallback for NAME ----
+    if "name" not in memory and len(text.split()) <= 3:
+        memory["name"] = text
+
+    # ---- Conversation Flow ----
+    if "name" not in memory:
+        reply = "👤 What is your name?"
+    elif "date" not in memory:
+        reply = f"📅 Hi *{memory['name']}*, which date do you want?"
+    elif "time" not in memory:
+        reply = f"⏰ What time on *{memory['date']}*?"
     else:
-        reply = (f"✅ **Booking Confirmed!**\n\n"
-                 f"👤 Name: {current['name']}\n"
-                 f"📅 Date: {current['date']}\n"
-                 f"⏰ Time: {current['time']}")
-        user_data[chat_id] = {} # Reset after success
-    
-    bot.reply_to(message, reply, parse_mode='Markdown')
+        reply = (
+            "✅ *Booking Confirmed!*\n\n"
+            f"👤 Name: {memory['name']}\n"
+            f"📅 Date: {memory['date']}\n"
+            f"⏰ Time: {memory['time']}"
+        )
+        user_data[chat_id] = {}  # Reset after booking
 
+    bot.reply_to(message, reply)
+
+# ================= RUN =================
 if __name__ == "__main__":
-    bot.infinity_polling()
+    bot.infinity_polling(skip_pending=True)
