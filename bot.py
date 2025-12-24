@@ -3,6 +3,7 @@ import google.generativeai as genai
 import os
 import json
 import datetime
+import re # Added for robust text cleaning
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -11,43 +12,52 @@ GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 bot = telebot.TeleBot(BOT_TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 
-# --- MEMORY (The Fix) ---
-# This dictionary will store data: {chat_id: {'name': 'John', 'date': '...', 'time': '...'}}
+# --- MEMORY ---
 user_data = {}
 
-print("✅ Bot is starting...")
+print("✅ Bot is starting... (Robust Version)")
 
-# --- AI HELPER ---
+# --- AI HELPER (Fixed) ---
 def parse_with_ai(text):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 1. Force JSON mode
+        model = genai.GenerativeModel('gemini-1.5-flash', 
+                                      generation_config={"response_mime_type": "application/json"})
+        
         current_date = datetime.datetime.now().strftime("%Y-%m-%d")
         
-        # Improved prompt to handle single words like "Sathiya"
         prompt = f"""
         Current Date: {current_date}
         User Input: "{text}"
         
-        You are a booking assistant. Extract any of these details if present:
-        - name (Look for proper nouns or "I am X")
-        - date (YYYY-MM-DD)
-        - time (HH:MM)
-        
-        Return JSON with null for missing fields. 
-        Example: {{"name": "Sathiya", "date": null, "time": null}}
+        Extract details. Return ONLY a JSON object.
+        fields: name, date (YYYY-MM-DD), time (HH:MM).
+        Set missing fields to null.
         """
+        
         response = model.generate_content(prompt)
-        clean_text = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(clean_text)
+        raw_text = response.text
+        
+        # 2. Safety Filter (Regex) - Finds the JSON object inside any text
+        # This fixes the crash if AI adds "Here is the data..."
+        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        
+        if match:
+            clean_json = match.group()
+            return json.loads(clean_json)
+        else:
+            print(f"⚠️ AI returned invalid format: {raw_text}")
+            return {}
+
     except Exception as e:
-        print(f"AI Error: {e}")
+        # 3. Print the EXACT error to Railway logs so you can see it
+        print(f"❌ CRITICAL AI ERROR: {e}")
         return {}
 
 # --- COMMANDS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # Clear memory on start
-    user_data[message.chat.id] = {}
+    user_data[message.chat.id] = {} # Reset memory
     bot.reply_to(message, "👋 Hello! I am your AI Appointment Bot.\n\n"
                           "Tell me when you want to book (e.g., 'Book next Friday at 4pm')")
 
@@ -55,41 +65,38 @@ def send_welcome(message):
 def handle_message(message):
     chat_id = message.chat.id
     
-    # 1. Initialize memory if new user
+    # Initialize memory if empty
     if chat_id not in user_data:
         user_data[chat_id] = {}
         
     bot.send_chat_action(chat_id, 'typing')
     
-    # 2. Get new info from AI
+    # Process with AI
     new_info = parse_with_ai(message.text)
     
-    # 3. UPDATE MEMORY (Merge new info with old info)
-    # Only overwrite if the AI found something new (not null)
-    if new_info.get('name'): 
-        user_data[chat_id]['name'] = new_info['name']
-    if new_info.get('date'): 
-        user_data[chat_id]['date'] = new_info['date']
-    if new_info.get('time'): 
-        user_data[chat_id]['time'] = new_info['time']
+    # Debugging: Print to Railway logs what the AI found
+    print(f"User: {message.text} | AI Found: {new_info}")
+
+    # Update Memory
+    if new_info.get('name'): user_data[chat_id]['name'] = new_info['name']
+    if new_info.get('date'): user_data[chat_id]['date'] = new_info['date']
+    if new_info.get('time'): user_data[chat_id]['time'] = new_info['time']
     
-    # 4. Check what is STILL missing from memory
-    current_data = user_data[chat_id]
+    # Check what is missing
+    current = user_data[chat_id]
     
-    if not current_data.get('name'):
+    if not current.get('name'):
         reply = "I need your name to confirm the booking."
-    elif not current_data.get('date'):
-        reply = f"Hi {current_data['name']}, what date would you like?"
-    elif not current_data.get('time'):
-        reply = f"Okay {current_data['name']}, what time on {current_data['date']}?"
+    elif not current.get('date'):
+        reply = f"Hi {current['name']}, what date would you like?"
+    elif not current.get('time'):
+        reply = f"Okay {current['name']}, what time on {current['date']}?"
     else:
-        # Success!
         reply = (f"✅ **Booking Confirmed!**\n\n"
-                 f"👤 Name: {current_data['name']}\n"
-                 f"📅 Date: {current_data['date']}\n"
-                 f"⏰ Time: {current_data['time']}")
-        # Clear memory after success so they can book again
-        user_data[chat_id] = {}
+                 f"👤 Name: {current['name']}\n"
+                 f"📅 Date: {current['date']}\n"
+                 f"⏰ Time: {current['time']}")
+        user_data[chat_id] = {} # Reset after success
     
     bot.reply_to(message, reply, parse_mode='Markdown')
 
