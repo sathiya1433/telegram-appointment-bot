@@ -1,25 +1,20 @@
 import os
-import json
 import time
-import datetime
-import requests
 import telebot
 import smtplib
 from email.message import EmailMessage
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 OWNER_EMAIL = os.getenv("OWNER_EMAIL")
 
-if not all([BOT_TOKEN, GROQ_API_KEY, EMAIL_ADDRESS, EMAIL_PASSWORD, OWNER_EMAIL]):
+if not all([BOT_TOKEN, EMAIL_ADDRESS, EMAIL_PASSWORD, OWNER_EMAIL]):
     raise RuntimeError("Missing environment variables")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-print("✅ Appointment Bot Started (FINAL FIX)")
+print("✅ Appointment Bot Started (STABLE VERSION)")
 
 # ================= MEMORY =================
 sessions = {}
@@ -37,62 +32,6 @@ def send_email(to_email, subject, body):
         smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         smtp.send_message(msg)
 
-# ================= AI EXTRACTION =================
-def ai_extract(text):
-    today = datetime.date.today().isoformat()
-
-    prompt = f"""
-Extract appointment details.
-
-Today: {today}
-
-Message:
-"{text}"
-
-Return ONLY JSON:
-{{
-  "name": null,
-  "email": null,
-  "date": null,
-  "time": null
-}}
-
-Rules:
-- Date → YYYY-MM-DD
-- Time → HH:MM (24-hour)
-- Understand: today, tomorrow, next monday, 4pm
-"""
-
-    try:
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama3-70b-8192",
-                "messages": [
-                    {"role": "system", "content": "Return strict JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0
-            },
-            timeout=15
-        )
-
-        content = r.json()["choices"][0]["message"]["content"]
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start == -1:
-            return {}
-
-        return json.loads(content[start:end])
-
-    except Exception as e:
-        print("AI ERROR:", e)
-        return {}
-
 # ================= START =================
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -107,8 +46,8 @@ def start(message):
     bot.reply_to(
         message,
         "👋 *Welcome!*\n\n"
-        "I will help you book an appointment.\n"
-        "Please tell me your *full name*."
+        "I’ll help you book an appointment.\n"
+        "What is your *full name*?"
     )
 
 # ================= MESSAGE HANDLER =================
@@ -118,7 +57,7 @@ def handle_message(message):
     text = message.text.strip()
     now = time.time()
 
-    # Expire old session
+    # Clear expired session
     if chat_id in sessions and now - sessions[chat_id]["last_active"] > SESSION_TIMEOUT:
         sessions.pop(chat_id)
 
@@ -133,48 +72,33 @@ def handle_message(message):
 
     session = sessions[chat_id]
     session["last_active"] = now
+
     bot.send_chat_action(chat_id, "typing")
 
-    extracted = ai_extract(text)
+    # ---------------- FLOW (NO AI, NO STUCK) ----------------
 
-    # -------- SAFE FIELD UPDATES (FINAL FIX) --------
-
-    # NAME (critical fix)
-    if not session["name"] and "@" not in text:
-        session["name"] = extracted.get("name") or text
-
-    # EMAIL
-    if extracted.get("email") and not session["email"]:
-        session["email"] = extracted["email"]
-    elif "@" in text and not session["email"]:
-        session["email"] = text
-
-    # DATE
-    if extracted.get("date") and not session["date"]:
-        session["date"] = extracted["date"]
-
-    # TIME
-    if extracted.get("time") and not session["time"]:
-        session["time"] = extracted["time"]
-
-    # -------- FLOW CONTROL --------
     if not session["name"]:
-        reply = "👤 Please tell me your full name."
+        session["name"] = text
+        reply = f"Nice to meet you *{session['name']}* 😊\n\n📧 Please share your *email address*."
 
     elif not session["email"]:
-        reply = "📧 Please provide your email address."
+        if "@" not in text:
+            reply = "❌ Please enter a valid email address."
+        else:
+            session["email"] = text
+            reply = "📅 What *date* would you like to book? (Example: 28/12 or Tomorrow)"
 
     elif not session["date"]:
-        reply = f"📅 Thank you {session['name']}, which *date* would you like?"
+        session["date"] = text
+        reply = f"⏰ What *time* on *{session['date']}* works for you?"
 
     elif not session["time"]:
-        reply = f"⏰ What *time* on {session['date']} works for you?"
+        session["time"] = text
 
-    else:
-        # Send confirmation emails
+        # ---------- SEND EMAILS ----------
         send_email(
             session["email"],
-            "Appointment Confirmation",
+            "Appointment Confirmed",
             f"""Hello {session['name']},
 
 Your appointment is confirmed.
@@ -182,14 +106,14 @@ Your appointment is confirmed.
 📅 Date: {session['date']}
 ⏰ Time: {session['time']}
 
-Thank you.
+Thank you!
 """
         )
 
         send_email(
             OWNER_EMAIL,
             "New Appointment Booked",
-            f"""New appointment booked.
+            f"""New appointment booked:
 
 Name: {session['name']}
 Email: {session['email']}
@@ -203,7 +127,7 @@ Time: {session['time']}
             f"👤 {session['name']}\n"
             f"📅 {session['date']}\n"
             f"⏰ {session['time']}\n\n"
-            "📧 Confirmation email sent to you and the owner."
+            "📧 Confirmation email sent."
         )
 
         sessions.pop(chat_id)
@@ -212,4 +136,4 @@ Time: {session['time']}
 
 # ================= RUN =================
 if __name__ == "__main__":
-    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+    bot.infinity_polling(skip_pending=True)
