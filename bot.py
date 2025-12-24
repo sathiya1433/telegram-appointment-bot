@@ -17,15 +17,11 @@ genai.configure(api_key=GEMINI_API_KEY)
 print("✅ Bot started")
 
 # ================= MEMORY =================
-# Per-user session (state machine)
+# Each user has a session with explicit state
 sessions = {}
 
 # ================= AI EXTRACTION =================
 def ai_extract(text, session):
-    """
-    AI is ONLY used to understand free text.
-    Business logic decides flow.
-    """
     today = datetime.date.today().isoformat()
 
     prompt = f"""
@@ -33,7 +29,7 @@ You are an appointment information extractor.
 
 Today: {today}
 
-Current known data:
+Current data:
 {json.dumps(session)}
 
 User message:
@@ -44,7 +40,7 @@ TASK:
 - Date format: YYYY-MM-DD
 - Time format: HH:MM (24-hour)
 - Handle: today, tomorrow, next monday
-- If not found, return null
+- If missing, return null
 - Return ONLY JSON
 
 JSON:
@@ -90,7 +86,6 @@ def start(message):
 
 # ================= MESSAGE HANDLER =================
 @bot.message_handler(func=lambda m: True)
-@bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
@@ -108,14 +103,15 @@ def handle_message(message):
     session = sessions[chat_id]
     bot.send_chat_action(chat_id, "typing")
 
+    # 1️⃣ AI extracts meaning
     extracted = ai_extract(text, session)
 
-    # Update from AI
+    # 2️⃣ Update session from AI
     for key in ["name", "date", "time"]:
         if extracted.get(key):
             session[key] = extracted[key]
 
-    # ---------- HARD STATE LOGIC ----------
+    # 3️⃣ HARD STATE LOGIC (NO AI CONTROL)
     if session["expecting"] == "name" and not session["name"]:
         session["name"] = text
 
@@ -139,7 +135,7 @@ def handle_message(message):
             )
             return
 
-    # ---------- NEXT STEP ----------
+    # 4️⃣ Decide next step
     if not session["name"]:
         session["expecting"] = "name"
         reply = "👤 What is your name?"
@@ -159,7 +155,7 @@ def handle_message(message):
             f"📅 Date: {session['date']}\n"
             f"⏰ Time: {session['time']}"
         )
-        sessions.pop(chat_id, None)
+        sessions.pop(chat_id, None)  # clear after booking
 
     bot.reply_to(message, reply)
 
@@ -167,6 +163,6 @@ def handle_message(message):
 if __name__ == "__main__":
     bot.infinity_polling(
         skip_pending=True,
-        timeout=60,
-        long_polling_timeout=60
+        timeout=90,
+        long_polling_timeout=90
     )
